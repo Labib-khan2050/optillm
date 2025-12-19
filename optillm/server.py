@@ -676,6 +676,11 @@ def check_api_key():
             return jsonify({"error": "Invalid Authorization header. Expected format: 'Authorization: Bearer YOUR_API_KEY'"}), 401
 
         client_key = auth_header.split('Bearer ', 1)[1].strip()
+        
+        # Handle dynamic routing format key|url
+        if "|" in client_key:
+            client_key = client_key.split("|", 1)[0]
+            
         if not secrets.compare_digest(client_key, server_config['optillm_api_key']):
             return jsonify({"error": "Invalid API key"}), 401
 
@@ -767,14 +772,38 @@ def proxy():
     if request_id:
         logger.info(f'Request {request_id}: Starting processing')
 
-    if bearer_token != "" and bearer_token.startswith("sk-"):
-        api_key = bearer_token
-        if base_url != "":
-            client = OpenAI(api_key=api_key, base_url=base_url)
+            except BatchingError as e:
+                logger.error(f"Batch processing failed: {e}")
+                return jsonify({"error": str(e)}), 500
+        
+        # Determine client and API key to use for this request
+        target_api_key = api_key
+        target_base_url = base_url
+        
+        # Check if we have a dynamic configuration in the bearer token
+        if bearer_token:
+            if "|" in bearer_token:
+                # Dynamic routing: key|url
+                target_api_key, target_base_url = bearer_token.split("|", 1)
+                logger.info(f"Using dynamic routing. Base URL: {target_base_url}")
+            else:
+                # Standard key, use configured base_url
+                target_api_key = bearer_token
+                
+            # Create a specific client for this request using the bearer token
+            import httpx
+            # We need to disable SSL verify for local dev if configured
+            http_client = httpx.Client(verify=server_config.get('ssl_verify', True))
+            
+            if target_base_url:
+                client = OpenAI(api_key=target_api_key, base_url=target_base_url, http_client=http_client)
+            else:
+                client = OpenAI(api_key=target_api_key, http_client=http_client)
         else:
-            client = OpenAI(api_key=api_key)
-    else: 
-        client = default_client
+            # No bearer token, use default_client (compat logic)
+            client = default_client
+
+        # Check if any of the approaches is 'none'
 
     try:
         # Route to batch processing if batch mode is enabled
